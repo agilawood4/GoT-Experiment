@@ -12,6 +12,7 @@ except ImportError:
 TASK_NAME = "hamilton"
 METHOD_NAME = "structured::hamilton"
 
+# deepseek-v3.2 当前接口上限为 n<=4，因此这里不要再设成 5
 BRANCHES: List[Dict[str, Any]] = [
     {
         "part": "DegreeAndEndpointHeuristics",
@@ -22,7 +23,7 @@ BRANCHES: List[Dict[str, Any]] = [
     {
         "part": "CandidateCoverWalk",
         "goal": "Try to construct a node-covering walk that visits every node exactly once; if successful, conclude Yes.",
-        "num_generate": 5,
+        "num_generate": 4,
         "keep_n": 2,
     },
     {
@@ -38,10 +39,14 @@ _EDGE_DIRECTED_RE = re.compile(r"\((\d+)\s*->\s*(\d+)\)")
 _YES_RE = re.compile(r"\byes\b", flags=re.IGNORECASE)
 _NO_RE = re.compile(r"\bno\b", flags=re.IGNORECASE)
 
-# 尝试从“nodes: 0,1,2,3”这样的片段抽取显式节点集合
 _NODE_LIST_PATTERNS = [
     re.compile(r"(?:nodes|vertices)\s*(?:are|:)\s*[\[\{]?\s*([\d,\s]+)\s*[\]\}]?", flags=re.IGNORECASE),
     re.compile(r"(?:node\s+set|vertex\s+set)\s*(?:is|:)\s*[\[\{]?\s*([\d,\s]+)\s*[\]\}]?", flags=re.IGNORECASE),
+]
+
+_NODE_RANGE_PATTERNS = [
+    re.compile(r"(?:nodes|vertices)\s+are\s+numbered\s+from\s+(\d+)\s+to\s+(\d+)", flags=re.IGNORECASE),
+    re.compile(r"(?:nodes|vertices)\s+numbered\s+from\s+(\d+)\s+to\s+(\d+)", flags=re.IGNORECASE),
 ]
 
 
@@ -52,29 +57,40 @@ def _clean_text(text: str) -> str:
     return (text or "").strip()
 
 
-def _extract_yes_no(text: str) -> Optional[bool]:
-    fn = getattr(utils, "extract_yes_no", None)
-    if callable(fn):
-        out = fn(text)
-        if out is not None:
-            s = str(out).strip().lower()
-            if s == "yes":
-                return True
-            if s == "no":
-                return False
-    if _YES_RE.search(text or ""):
-        return True
-    if _NO_RE.search(text or ""):
-        return False
-    return None
-
-
 def _extract_final_line(text: str) -> str:
     cleaned = _clean_text(text)
     if not cleaned:
         return ""
     lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
     return lines[-1] if lines else ""
+
+
+def _extract_yes_no(text: str) -> Optional[bool]:
+    cleaned = _clean_text(text)
+    final_line = _extract_final_line(cleaned).lower()
+
+    # 优先看最终结论行，避免正文里同时出现 yes/no 干扰判断
+    if final_line in {"### yes", "yes"}:
+        return True
+    if final_line in {"### no", "no"}:
+        return False
+
+    fn = getattr(utils, "extract_yes_no", None)
+    if callable(fn):
+        out = fn(cleaned)
+        if out is not None:
+            s = str(out).strip().lower()
+            if s in {"yes", "### yes"}:
+                return True
+            if s in {"no", "### no"}:
+                return False
+
+    # 若全文同时出现 yes/no，则优先取最后一次出现的那个，尽量贴近最终答案
+    matches = list(re.finditer(r"\b(yes|no)\b", cleaned, flags=re.IGNORECASE))
+    if matches:
+        last = matches[-1].group(1).lower()
+        return last == "yes"
+    return None
 
 
 def _looks_truncated(text: str) -> bool:
@@ -90,6 +106,7 @@ def _looks_truncated(text: str) -> bool:
 
 def _extract_explicit_nodes(text: str) -> Set[int]:
     nodes: Set[int] = set()
+
     for pat in _NODE_LIST_PATTERNS:
         for m in pat.finditer(text or ""):
             chunk = m.group(1)
@@ -98,25 +115,43 @@ def _extract_explicit_nodes(text: str) -> Set[int]:
                     nodes.add(int(x))
                 except Exception:
                     pass
+
+    for pat in _NODE_RANGE_PATTERNS:
+        for m in pat.finditer(text or ""):
+            try:
+                lo = int(m.group(1))
+                hi = int(m.group(2))
+            except Exception:
+                continue
+            if lo <= hi:
+                nodes.update(range(lo, hi + 1))
+            else:
+                nodes.update(range(hi, lo + 1))
+
     return nodes
 
 
 def _parse_graph(query: str) -> Dict[str, Any]:
     text = query or ""
+    text_low = text.lower()
 
     directed_edges = _EDGE_DIRECTED_RE.findall(text)
     undirected_edges = _EDGE_UNDIRECTED_RE.findall(text)
 
-    directed = False
     if directed_edges:
         directed = True
         raw_edges = directed_edges
     else:
         raw_edges = undirected_edges
-        if "directed graph" in text.lower() or "digraph" in text.lower():
+        # 先判 undirected，再判 directed，避免 "undirected graph" 被误识别成 directed
+        if re.search(r"\bundirected\s+graph\b|\bundirected\b", text_low):
+            directed = False
+        elif re.search(r"\bdirected\s+graph\b|\bdigraph\b|\bdirected\b", text_low):
             directed = True
+        else:
+            directed = False
 
-    edges: List[Tuple[int, int]] = []
+    raw_edge_list: List[Tuple[int, int]] = []
     nodes: Set[int] = set()
 
     for a_str, b_str in raw_edges:
@@ -124,14 +159,30 @@ def _parse_graph(query: str) -> Dict[str, Any]:
             a, b = int(a_str), int(b_str)
         except Exception:
             continue
-        edges.append((a, b))
+        raw_edge_list.append((a, b))
         nodes.add(a)
         nodes.add(b)
 
     nodes |= _extract_explicit_nodes(text)
+    node_ids = sorted(nodes)
+    if not node_ids:
+        return {"n": 0, "edges": [], "directed": directed, "nodes": []}
 
-    n = max(nodes) + 1 if nodes else 0
-    return {"n": n, "edges": edges, "directed": directed, "nodes": sorted(nodes)}
+    # 规范化为连续编号，避免节点编号不是从 0 连续开始时出现 phantom node
+    id_map = {node_id: idx for idx, node_id in enumerate(node_ids)}
+    edges: List[Tuple[int, int]] = []
+    seen_edges: Set[Tuple[int, int]] = set()
+
+    for u_raw, v_raw in raw_edge_list:
+        u = id_map[u_raw]
+        v = id_map[v_raw]
+        edge = (u, v)
+        if edge in seen_edges:
+            continue
+        seen_edges.add(edge)
+        edges.append(edge)
+
+    return {"n": len(node_ids), "edges": edges, "directed": directed, "nodes": node_ids}
 
 
 def _build_adj(graph: Dict[str, Any]) -> Dict[int, List[int]]:
@@ -156,7 +207,7 @@ def _has_hamilton_path(graph: Dict[str, Any]) -> bool:
 
     adj = _build_adj(graph)
     target_mask = (1 << n) - 1
-    memo = set()
+    memo: Set[Tuple[int, int]] = set()
 
     def dfs(u: int, mask: int) -> bool:
         key = (u, mask)
