@@ -177,3 +177,36 @@ def compute_step_level_shaping(
             }
         )
     return shaped
+
+
+def compute_node_preference_score(
+    step: Dict[str, Any],
+    trajectory: Dict[str, Any],
+    alpha_tokens: float = 1e-6,
+) -> float:
+    """
+    Unified node-level score for online multi-node preference construction.
+    """
+    part = str(step.get("part", "")).lower()
+    operation = str(step.get("operation", "")).lower()
+    quality = _quality_from_search_score(step.get("search_score"))
+    valid = 1.0 if step.get("final_validator") else 0.0
+    gt = 1.0 if step.get("ground_truth") else 0.0
+    is_correct = 1.0 if trajectory.get("is_correct", False) else 0.0
+    branch_agree = _branch_agreement(trajectory)
+    q_tokens = float((step.get("query_tokens") or {}).get("prompt_tokens") or 0.0)
+    c_tokens = float((step.get("query_tokens") or {}).get("completion_tokens") or 0.0)
+    token_penalty = float(alpha_tokens) * (q_tokens + c_tokens)
+
+    if part == "branch":
+        score = 0.55 * quality + 0.15 * valid + 0.15 * gt + 0.15 * branch_agree
+    elif part == "aggregate":
+        score = 0.45 * quality + 0.25 * branch_agree + 0.15 * valid + 0.15 * gt
+    elif part == "improve" or operation == "validate_and_improve":
+        score = 0.35 * quality + 0.25 * valid + 0.20 * gt + 0.20 * is_correct
+    elif part == "final":
+        score = 0.50 * is_correct + 0.30 * valid + 0.20 * quality
+    else:
+        score = 0.60 * quality + 0.20 * valid + 0.20 * gt
+
+    return float(score - token_penalty)

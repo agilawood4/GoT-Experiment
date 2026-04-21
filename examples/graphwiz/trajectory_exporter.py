@@ -92,6 +92,14 @@ def build_trajectory_record(
                         "completion_tokens": query_event.get("completion_tokens_delta"),
                         "cost_delta": query_event.get("cost_delta"),
                     },
+                    "node_uid": (
+                        f"{sample.get('id')}|{op_idx}|{t_idx}|{state.get('part') or ''}"
+                    ),
+                    "reward_terms": {
+                        "search_score": thought_score,
+                        "final_validator": final_valid,
+                        "ground_truth": step_ground_truth,
+                    },
                 }
             )
 

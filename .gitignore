@@ -28,5 +28,12 @@ results/
 # Environments
 env/
 
-# Config File
-**/config.json
+# models and data
+models/
+data/
+
+# Old GoT
+/examples/*
+!examples/graphwiz/
+
+

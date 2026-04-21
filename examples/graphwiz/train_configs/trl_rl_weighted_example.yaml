@@ -1,0 +1,10 @@
+model_name_or_path: ./models/Qwen2.5-3B-Instruct
+dataset_path: ./examples/graphwiz/data/graphwiz_rl.jsonl
+output_dir: ./outputs/trl_rl_weighted_qwen25_3b
+max_seq_length: 2048
+learning_rate: 2e-5
+num_train_epochs: 1
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+max_train_samples: 64
+bf16: true

@@ -1,0 +1,134 @@
+# GraphWiz 混合任务后训练测试命令（PowerShell）
+# 说明：
+# 1) 本文件不使用 $ 变量。
+# 2) 混合任务的关键是：不传 --subset，让数据按 source 自动混合并由 routed_task 自动分发。
+# 3) 默认使用 source=test，你也可以改成 source=train 做更大规模。
+
+# =========================
+# 0) 环境准备（可只执行一次）
+# =========================
+python -m pip install -U pip
+python -m pip install -U datasets trl peft transformers accelerate pandas pyarrow huggingface_hub
+
+# =========================
+# 1) 冒烟测试（混合任务 + 在线逐节点 DPO）
+# =========================
+python .\examples\graphwiz\graphwiz_eval_generic.py `
+  --source test `
+  --lm_name qwen_local_3b `
+  --max_samples 20 `
+  --budget 120 `
+  --use_cache 0 `
+  --online_dpo 1 `
+  --online_pref_backend sqlite `
+  --online_batch_size 4 `
+  --online_update_interval_steps 4 `
+  --online_min_node_gap 0.03 `
+  --online_hot_swap 1 `
+  --online_poll_interval_sec 2 `
+  --online_dpo_beta 0.1 `
+  --online_dpo_lr 5e-6 `
+  --online_dpo_epochs 1 `
+  --online_dpo_max_steps 10 `
+  --online_max_checkpoints_keep 2
+
+# 把 <MIX_SMOKE_RUN_DIR> 替换为刚跑出来的 run 目录
+python .\examples\graphwiz\verify_online_dpo_pipeline.py `
+  --online_run_dir "examples/graphwiz/results/<MIX_SMOKE_RUN_DIR>" `
+  --output "examples/graphwiz/results/<MIX_SMOKE_RUN_DIR>/online_verify_smoke_mixed.json"
+
+# =========================
+# 2) baseline 评测（混合任务，无在线 DPO）
+# =========================
+python .\examples\graphwiz\graphwiz_eval_generic.py `
+  --source test `
+  --lm_name qwen_local_3b `
+  --max_samples 240 `
+  --budget 500 `
+  --use_cache 0 `
+  --online_dpo 0
+
+# 记下目录：examples/graphwiz/results/<MIX_BASELINE_RUN_DIR>
+
+# =========================
+# 3) online DPO 评测（混合任务，逐节点偏好 + 异步训练 + 热切换）
+# =========================
+python .\examples\graphwiz\graphwiz_eval_generic.py `
+  --source test `
+  --lm_name qwen_local_3b `
+  --max_samples 240 `
+  --budget 500 `
+  --use_cache 0 `
+  --online_dpo 1 `
+  --online_pref_backend sqlite `
+  --online_batch_size 16 `
+  --online_update_interval_steps 16 `
+  --online_min_node_gap 0.05 `
+  --online_hot_swap 1 `
+  --online_poll_interval_sec 5 `
+  --online_dpo_beta 0.1 `
+  --online_dpo_lr 5e-6 `
+  --online_dpo_epochs 1 `
+  --online_dpo_max_steps 30 `
+  --online_max_checkpoints_keep 3
+
+# 记下目录：examples/graphwiz/results/<MIX_ONLINE_RUN_DIR>
+
+python .\examples\graphwiz\verify_online_dpo_pipeline.py `
+  --online_run_dir "examples/graphwiz/results/<MIX_ONLINE_RUN_DIR>" `
+  --baseline_run_dir "examples/graphwiz/results/<MIX_BASELINE_RUN_DIR>" `
+  --output "examples/graphwiz/results/<MIX_ONLINE_RUN_DIR>/online_verify_vs_baseline_mixed.json"
+
+# =========================
+# 4) 导出混合偏好数据 + 离线 DPO 训练
+# =========================
+python .\examples\graphwiz\export_pref_data.py `
+  --inputs "examples/graphwiz/results/<MIX_BASELINE_RUN_DIR>,examples/graphwiz/results/<MIX_ONLINE_RUN_DIR>" `
+  --output "examples/graphwiz/data/graphwiz_pref_mixed_full.jsonl" `
+  --min_reward_gap 0.05
+
+python .\examples\graphwiz\train_dpo_trl.py `
+  --model_name_or_path "./models/Qwen2.5-3B-Instruct" `
+  --dataset_path "examples/graphwiz/data/graphwiz_pref_mixed_full.jsonl" `
+  --output_dir "./outputs/trl_dpo_qwen25_3b_mixed_full" `
+  --beta 0.1 `
+  --learning_rate 5e-6 `
+  --num_train_epochs 1 `
+  --per_device_train_batch_size 1 `
+  --gradient_accumulation_steps 8 `
+  --logging_steps 10 `
+  --save_steps 100 `
+  --max_train_samples 0 `
+  --bf16 1
+
+# =========================
+# 5) 注册离线 DPO 混合模型
+# =========================
+python -c "import json; p=r'.\graph_of_thoughts\language_models\config.json'; cfg=json.load(open(p,'r',encoding='utf-8')); cfg['qwen_local_3b_dpo_mixed_full']={'backend':'local_hf','model_path':'./outputs/trl_dpo_qwen25_3b_mixed_full','tokenizer_path':'./outputs/trl_dpo_qwen25_3b_mixed_full','device_map':'auto','torch_dtype':'bfloat16','max_new_tokens':1024,'temperature':0.7,'top_p':0.9,'do_sample':True,'stop':None,'prompt_token_cost':0.0,'response_token_cost':0.0}; json.dump(cfg, open(p,'w',encoding='utf-8'), ensure_ascii=False, indent=2)"
+
+# =========================
+# 6) 评测离线 DPO 混合模型 + 对比 baseline 指标
+# =========================
+python .\examples\graphwiz\graphwiz_eval_generic.py `
+  --source test `
+  --lm_name qwen_local_3b_dpo_mixed_full `
+  --max_samples 240 `
+  --budget 500 `
+  --use_cache 0 `
+  --online_dpo 0
+
+# 记下目录：examples/graphwiz/results/<MIX_DPO_EVAL_RUN_DIR>
+
+python -c "import json, os; b='examples/graphwiz/results/<MIX_BASELINE_RUN_DIR>'; d='examples/graphwiz/results/<MIX_DPO_EVAL_RUN_DIR>'; sb=json.load(open(os.path.join(b,'summary.json'),'r',encoding='utf-8')); sd=json.load(open(os.path.join(d,'summary.json'),'r',encoding='utf-8')); out={'baseline_run':b,'dpo_eval_run':d,'baseline_accuracy':sb.get('accuracy',0.0),'dpo_accuracy':sd.get('accuracy',0.0),'accuracy_delta':sd.get('accuracy',0.0)-sb.get('accuracy',0.0),'baseline_mean_reward':sb.get('mean_reward',0.0),'dpo_mean_reward':sd.get('mean_reward',0.0),'mean_reward_delta':sd.get('mean_reward',0.0)-sb.get('mean_reward',0.0)}; op=os.path.join(d,'dpo_vs_baseline_metrics_mixed.json'); json.dump(out, open(op,'w',encoding='utf-8'), ensure_ascii=False, indent=2); print(json.dumps(out, ensure_ascii=False, indent=2)); print('Saved:', op)"
+
+# =========================
+# 7) 关键结果文件
+# =========================
+# 在线 DPO 对比指标：
+# examples/graphwiz/results/<MIX_ONLINE_RUN_DIR>/online_verify_vs_baseline_mixed.json
+#
+# 离线 DPO 对比指标：
+# examples/graphwiz/results/<MIX_DPO_EVAL_RUN_DIR>/dpo_vs_baseline_metrics_mixed.json
+#
+# 每次 run 的任务分布与指标：
+# examples/graphwiz/results/<RUN_DIR>/task_summary.json

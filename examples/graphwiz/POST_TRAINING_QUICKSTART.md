@@ -27,8 +27,22 @@ python examples/graphwiz/download_qwen.py --repo_id Qwen/Qwen2.5-3B-Instruct --l
 
 ### 4) Minimal TRL SFT run (example)
 
-Use `examples/graphwiz/train_configs/trl_sft_example.yaml` as a starter template.
+```bash
+python examples/graphwiz/train_sft_trl.py --model_name_or_path ./models/Qwen2.5-3B-Instruct --dataset_path examples/graphwiz/data/graphwiz_sft.jsonl --output_dir ./outputs/trl_sft_qwen25_3b --max_train_samples 32
+```
 
-### 5) LLaMA-Factory DPO dataset mapping
+### 5) Minimal TRL DPO run (example)
+
+```bash
+python examples/graphwiz/train_dpo_trl.py --model_name_or_path ./models/Qwen2.5-3B-Instruct --dataset_path examples/graphwiz/data/graphwiz_pref.jsonl --output_dir ./outputs/trl_dpo_qwen25_3b --max_train_samples 32
+```
+
+### 6) Verify small end-to-end pipeline
+
+```bash
+python examples/graphwiz/verify_post_training_pipeline.py --run_dir examples/graphwiz/results/<run_dir> --sft_path examples/graphwiz/data/graphwiz_sft.jsonl --pref_path examples/graphwiz/data/graphwiz_pref.jsonl --rl_path examples/graphwiz/data/graphwiz_rl.jsonl
+```
+
+### 7) LLaMA-Factory DPO dataset mapping
 
 Use `examples/graphwiz/train_configs/llamafactory_dpo_dataset_info.json` and point it to the generated preference jsonl.

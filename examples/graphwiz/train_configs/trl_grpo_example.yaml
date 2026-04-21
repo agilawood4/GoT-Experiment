@@ -1,0 +1,10 @@
+model_name_or_path: ./models/Qwen2.5-3B-Instruct
+dataset_path: ./examples/graphwiz/data/graphwiz_rl.jsonl
+output_dir: ./outputs/trl_grpo_qwen25_3b
+max_prompt_length: 1024
+max_completion_length: 256
+learning_rate: 5e-6
+num_train_epochs: 1
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+max_train_samples: 64

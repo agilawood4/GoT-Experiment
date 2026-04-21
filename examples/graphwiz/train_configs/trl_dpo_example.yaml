@@ -1,12 +1,11 @@
 model_name_or_path: ./models/Qwen2.5-3B-Instruct
-dataset_text_field: output
-output_dir: ./outputs/trl_sft_qwen25_3b
+dataset_path: ./examples/graphwiz/data/graphwiz_pref.jsonl
+output_dir: ./outputs/trl_dpo_qwen25_3b
+beta: 0.1
+learning_rate: 5e-6
+num_train_epochs: 1
 per_device_train_batch_size: 1
 gradient_accumulation_steps: 8
-learning_rate: 2e-5
-num_train_epochs: 1
-max_seq_length: 2048
 logging_steps: 10
 save_steps: 100
 bf16: true
-packing: false
